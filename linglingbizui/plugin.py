@@ -29,7 +29,7 @@ COMMAND_UNMUTE_NAME = "unmute_mai"
 class MuteMaiCommand(PlusCommand):
     """Master 用来让 Bot 在当前聊天流静音的命令。"""
     command_name = COMMAND_MUTE_NAME
-    command_description = "让Bot在当前聊天流静音，可指定时长（默认10分钟）"
+    command_description = "让Bot在当前聊天流静音，可指定时长（默认从配置读取）"
     # command_aliases = [] # 不再使用 PlusCommand 的 aliases，由 Handler 处理
     chat_type_allow = ChatType.ALL # 允许在群聊和私聊中使用
 
@@ -44,6 +44,19 @@ class MuteMaiCommand(PlusCommand):
         # 获取存储实例
         plugin_storage = storage_api.get(PLUGIN_NAME)
 
+        # 获取插件配置
+        # 检查插件主功能是否启用
+        plugin_enabled = self.get_config("plugin.enabled", True)
+        if not plugin_enabled:
+            await send_api.text_to_stream("❌ 插件已被禁用。", stream_id)
+            return {"success": False, "message": "插件已禁用"}
+
+        # 检查静音功能是否启用
+        mute_enabled = self.get_config("features.mute_enabled", True)
+        if not mute_enabled:
+            await send_api.text_to_stream("❌ 静音功能已被禁用。", stream_id)
+            return {"success": False, "message": "静音功能已禁用"}
+
         # 从 context 中获取参数 (通过 CommandArgs)
         args = context.get('args') # 假设 context 中包含 CommandArgs
         if args and not args.is_empty():
@@ -53,8 +66,8 @@ class MuteMaiCommand(PlusCommand):
                 await send_api.text_to_stream("❌ 无法解析指定的时长，请使用如 '10min', '30分钟', '1小时' 等格式。", stream_id)
                 return {"success": False, "message": "无法解析时长"}
         else:
-            # 如果没有参数，默认为 10 分钟
-            duration_minutes = 10
+            # 如果没有参数，从配置中获取默认时长
+            duration_minutes = self.get_config("defaults.default_mute_minutes", 10)
 
         # 计算解除禁言的时间
         unmute_time = datetime.now() + timedelta(minutes=duration_minutes)
@@ -116,6 +129,19 @@ class UnmuteMaiCommand(PlusCommand):
 
         stream_id = chat_stream.stream_id
 
+        # 获取插件配置
+        # 检查插件主功能是否启用
+        plugin_enabled = self.get_config("plugin.enabled", True)
+        if not plugin_enabled:
+            await send_api.text_to_stream("❌ 插件已被禁用。", stream_id)
+            return {"success": False, "message": "插件已禁用"}
+
+        # 检查静音功能是否启用
+        mute_enabled = self.get_config("features.mute_enabled", True)
+        if not mute_enabled:
+            await send_api.text_to_stream("❌ 静音功能已被禁用。", stream_id)
+            return {"success": False, "message": "静音功能已禁用"}
+
         # 获取存储实例
         plugin_storage = storage_api.get(PLUGIN_NAME)
 
@@ -127,6 +153,11 @@ class UnmuteMaiCommand(PlusCommand):
             print(f"[MuteAndUnmutePlugin] Unmuted stream {stream_id} via command.")
         else:
             print(f"[MuteAndUnmutePlugin] Attempted to unmute stream {stream_id} via command, but it was not muted.")
+            # 即使未被禁言，也可能需要发送消息，但这里我们只在解除时发送
+            # 可以选择发送一个提示，说明当前并未禁言
+            # await send_api.text_to_stream("我当前并未被禁言哦。", stream_id)
+            # 为了与原逻辑一致，我们只在成功解除时发送消息
+            return {"success": True, "message": f"尝试取消 {stream_id} 的禁言，但该聊天流未被禁言。"}
 
         # 从配置中获取提示词
         unmute_message = self.get_config("messages.unmute_start", "好的，我恢复发言了！")
@@ -172,6 +203,16 @@ class AliasHandler(Handler):
             return HandlerReturn(intercepted=False)
 
         # 获取插件配置
+        # 检查插件主功能是否启用
+        plugin_enabled = self.get_config("plugin.enabled", True)
+        if not plugin_enabled:
+            return HandlerReturn(intercepted=False)
+
+        # 检查静音功能是否启用
+        mute_enabled = self.get_config("features.mute_enabled", True)
+        if not mute_enabled:
+            return HandlerReturn(intercepted=False)
+
         mute_aliases = self.get_config("aliases.mute", ["绫绫闭嘴"]) # 默认值
         # unmute_aliases = self.get_config("aliases.unmute", ["绫绫张嘴"]) # unmute 别名也可以有参数，但当前 unmute 逻辑不需要
 
@@ -183,40 +224,6 @@ class AliasHandler(Handler):
                 # 提取别名后的部分作为参数
                 param_str = message_content[len(alias):].strip()
                 # 构造 context，包含原始 message 和参数
-                context = {
-                    'chat_stream': message.chat_stream,
-                    'message': message,
-                    'args': param_str # 这里简单传递字符串，实际 PlusCommand 可能期望 CommandArgs 对象
-                    # 如果需要 CommandArgs，可能需要在 MuteMaiCommand.execute 中处理字符串解析
-                    # 或者在 AliasHandler 中模拟 CommandArgs 的行为
-                }
-                # 为了兼容 PlusCommand.execute，我们需要模拟 CommandArgs
-                # 或者直接修改 MuteMaiCommand.execute 来接受字符串参数
-                # 这里我们选择修改 MuteMaiCommand.execute 来处理 context 中的参数字符串
-                # 然后调用 MuteMaiCommand().execute(context)
-                # 但 MuteMaiCommand 的 execute 期望 CommandArgs 对象
-                # 让我们重新审视 CommandArgs 的用法
-                # 在 PlusCommand.execute 中，'args' 是一个 CommandArgs 实例
-                # 我们需要在 AliasHandler 中创建一个 CommandArgs 实例
-                # 或者，我们修改 MuteMaiCommand.execute 来接受一个简单的字符串参数
-                # 或者，我们创建一个辅助函数来模拟 CommandArgs 的行为
-
-                # 更好的方法：创建一个临时的 CommandArgs 对象来传递参数
-                # 但 CommandArgs 的创建可能需要特定的初始化
-                # 为了简化，我们可以修改 MuteMaiCommand.execute，使其也能接受字符串参数
-                # 或者，我们直接调用 MuteMaiCommand 的内部逻辑，绕过 CommandArgs
-
-                # 方案：在 MuteMaiCommand 中增加一个方法来处理字符串参数
-                # 然后在 AliasHandler 中调用这个方法
-                # 但这会增加 MuteMaiCommand 的复杂性
-                # 最佳实践是让 AliasHandler 模拟 CommandArgs
-
-                # 查看文档，CommandArgs 通常在 PlusCommand 内部由系统根据 command_name 和输入消息解析
-                # 在 AliasHandler 中，我们没有经过 PlusCommand 的解析流程
-                # 我们需要手动模拟这个过程
-
-                # 假设 CommandArgs 有 .get_raw(), .is_empty() 等方法
-                # 我们可以创建一个简单的类来模拟
                 class SimpleCommandArgs:
                     def __init__(self, raw_str: str):
                         self.raw_str = raw_str
@@ -262,7 +269,7 @@ class AliasHandler(Handler):
 
                 result = await MuteMaiCommand().execute(context_with_args)
                 print(f"[MuteAndUnmutePlugin] Executed mute command via alias '{alias}' with param '{param_str}' in {message.stream_id}. Result: {result}")
-                return HandlerReturn(intercepted=False) # 不拦截，让原消息可能继续参与其他流程
+                return HandlerReturn(intercepted=False) # 不拦截
 
         # 检查是否匹配 unmute 别名 (同样处理参数，虽然当前 unmute 不需要)
         unmute_aliases = self.get_config("aliases.unmute", ["绫绫张嘴"])
@@ -332,6 +339,22 @@ class AtUnmuteHandler(Handler):
         if not message:
             return HandlerReturn(intercepted=False)
 
+        # 获取插件配置
+        # 检查插件主功能是否启用
+        plugin_enabled = self.get_config("plugin.enabled", True)
+        if not plugin_enabled:
+            return HandlerReturn(intercepted=False)
+
+        # 检查静音功能是否启用
+        mute_enabled = self.get_config("features.mute_enabled", True)
+        if not mute_enabled:
+            return HandlerReturn(intercepted=False)
+
+        # 检查 @ 唤醒功能是否启用
+        at_unmute_enabled = self.get_config("features.at_unmute_enabled", True)
+        if not at_unmute_enabled:
+            return HandlerReturn(intercepted=False)
+
         stream_id = message.stream_id
         plugin_storage = storage_api.get(PLUGIN_NAME)
 
@@ -345,84 +368,14 @@ class AtUnmuteHandler(Handler):
             if current_time < mute_until_timestamp:
                 # Bot 确实处于禁言状态
                 # 检查消息是否 @ 了 Bot
-                # 假设 Message 对象有一个 `at_info` 或类似属性，包含被 @ 的用户信息
-                # 或者 `content` 中包含 @ 机器人的标识
-                # 这需要根据 MoFox 的具体 Message 结构来确定
-                # 假设 message.at_users 是一个被 @ 的用户 ID 列表
-                # 且 global_config.bot.qq_account 是机器人的 ID
-                # 从 Message 对象获取被 @ 的用户列表
-                # 通常，这可能需要调用 message_api 或其他相关 API 来解析消息
-                # 或者 Message 对象本身包含 .mentioned_user_ids 等属性
-                # 我们暂时假设 Message 有一个 .mentioned_user_ids 属性
-                # 需要查阅具体文档或 Message 类定义来确认
-                # 为了演示，我们假设存在 .mentioned_user_ids
-                # 并且机器人自身的 ID 可以通过某种方式获取
-                # 例如，从 global_config 或通过 self.get_config 获取（不太可能）
-                # 或者通过 context.get('global_config') (如果 Handler 支持)
-                # 或者最可能的是，通过 message.chat_stream 或其他 API 获取
-                # 暂时，我们假设可以获取到 bot_id
-                # 从插件配置或全局配置获取 bot_id 可能比较麻烦
-                # 最直接的方式是假设 Message 对象包含足够的信息
-                # 假设 message.mentioned_user_ids 是一个列表
-                # 假设我们能获取到 bot_id
-                # 从 Message 对象中获取平台信息和用户ID，然后与 Bot 的 ID 对比
-                # 通常 Bot 的 ID 在全局配置中，例如 global_config.bot.qq_account
-                # 但这在 Handler 中获取可能比较复杂
-                # 我们需要一种方式来获取 Bot 的 ID
-                # 一个可能的方法是通过 send_api 或其他 API 间接获取
-                # 或者，如果 Handler 有访问全局配置的权限，可以通过 self.global_config
-                # 但 Handler 可能没有直接访问 global_config 的方法
-                # 让我们假设 Message 对象包含 chat_stream，而 chat_stream 包含 bot_id
-                # 或者，Bot ID 可以在插件加载时获取并存储在类属性中
-                # 这需要更深入的框架知识
-                # 为了继续，我们假设存在一种方法来获取 Bot ID
-                # 并且 Message 对象包含 .mentioned_user_ids
-                # 一个更安全的假设是，Message.content 包含 @ 信息，并且我们可以解析它
-                # 通常，@ 信息在消息的特殊字段中，而不是 content 里
-                # 但如果我们能获取 Bot 的 nickname 或 ID，我们可以在 content 中查找
-                # 例如，QQ 中可能是 @机器人昵称 或 [CQ:at,qq=机器人QQ号]
-                # 让我们尝试一种通用的方法：获取 Bot 在当前聊天流的 ID
-                # 这通常需要通过 chat_stream 或全局配置
-                # 假设我们可以通过某种方式获取 bot_id
-                # 例如，通过 send_api 获取当前登录的账户信息？
-                # send_api.get_current_account_info() ?
-                # 或者，通过 context 传递 bot_id ?
-                # 这个问题比较核心，需要框架支持
-                # 让我们暂时使用一个占位符，表示我们需要获取 bot_id
-                # 并检查 message 是否 @ 了它
-                # 为了模拟，我们假设存在一个函数可以检查消息是否 @ 了 Bot
-                # 或者，我们可以从 message 对象中获取 bot_id
-                # 假设 message 对象有一个 .bot_info 或 .platform_info 可以获取当前机器人ID
-                # 或者，我们可以从 context 中获取 bot_id
-                # context = args.get('context', {})
-                # bot_id = context.get('bot_id') # 这需要在 Handler 调用时提供
-                # 最可能的情况是，我们需要在 Handler 的 handle 方法中获取 bot_id
-                # 通过 Message 对象的 chat_stream 或其他方式
-                # 例如: bot_id = message.chat_stream.get_bot_id() (如果存在)
-                # 或者: from src.config.config import global_config; bot_id = global_config.bot.qq_account
-                # 但直接导入 global_config 在 Handler 中可能不是最佳实践
-                # 让我们尝试导入 global_config 来获取 bot_id
-                # 但这意味着 Handler 依赖于全局配置，这可能不是理想的
-                # 但是，为了实现功能，这可能是必要的
-                # 从 MaiCore 或 MoFox 的结构来看，通常会有一个全局配置对象
-                # 例如 src.config.config.global_config
-                # 并且 Bot 的 ID 会存储在 global_config.bot.qq_account 或类似字段中
-                # 我们尝试导入它
                 try:
                     from src.config.config import global_config
                     bot_id = str(global_config.bot.qq_account)
-                    platform = global_config.bot.platform
                 except ImportError:
                     print("[MuteAndUnmutePlugin] Error: Could not import global_config to get bot_id for @ check.")
                     return HandlerReturn(intercepted=False)
 
                 # 检查消息是否 @ 了 Bot
-                # 假设 Message 对象有 .mentioned_user_ids 属性
-                # 这是最常见的实现方式
-                # 如果没有，我们需要检查 .content 或其他属性
-                # 例如，如果 .content 包含 [CQ:at,qq=bot_id] 或类似格式
-                # 但 .mentioned_user_ids 更符合设计
-                # 假设 .mentioned_user_ids 存在
                 if hasattr(message, 'mentioned_user_ids') and bot_id in message.mentioned_user_ids:
                     # Bot 被 @ 了，且正处于禁言状态，自动解除禁言
                     del current_muted_streams[stream_id]
@@ -456,17 +409,10 @@ class AtUnmuteHandler(Handler):
                     except Exception as e:
                         print(f"[MuteAndUnmutePlugin] Error trying to trigger thinking after @ unmute: {e}")
 
-                    # 返回 HandlerReturn 表示已处理（虽然主要动作是解除禁言，但可以认为是处理了@事件）
-                    # 这里可以决定是否拦截原 @ 消息，让 Bot 不再对这个 @ 做出其他回应
-                    # 但通常 @ 消息本身可能触发其他逻辑（如普通回复），所以不拦截可能更合适
-                    # 如果 Bot 因为 @ 而解除禁言并开始思考，那么它自然会处理后续流程
-                    # 所以这里选择不拦截，让原消息继续参与其他处理流程
                     return HandlerReturn(intercepted=False)
-                # 如果没有 @ Bot，但 Bot 仍被禁言，则继续执行 MuteHandler 的拦截逻辑
-                # 所以这里直接返回不拦截，让 MuteHandler 去检查和拦截
             # 如果禁言已过期，也直接返回不拦截，让 MuteHandler 去清理过期记录
 
-        # 如果当前聊天流未被禁言，或 Bot 未被 @，则不处理
+        # 如果当前聊天流未被禁言，或 Bot 未被 @，或 @ 唤醒功能被禁用，则不处理
         return HandlerReturn(intercepted=False)
 
 
@@ -484,6 +430,17 @@ class MuteHandler(Handler):
         if not message:
             return HandlerReturn(intercepted=False)
 
+        # 获取插件配置
+        # 检查插件主功能是否启用
+        plugin_enabled = self.get_config("plugin.enabled", True)
+        if not plugin_enabled:
+            return HandlerReturn(intercepted=False)
+
+        # 检查静音功能是否启用
+        mute_enabled = self.get_config("features.mute_enabled", True)
+        if not mute_enabled:
+            return HandlerReturn(intercepted=False)
+
         stream_id = message.stream_id
         plugin_storage = storage_api.get(PLUGIN_NAME)
 
@@ -495,13 +452,6 @@ class MuteHandler(Handler):
 
             if current_time < mute_until_timestamp:
                 # 当前时间仍在禁言时间内
-                # 注意：AtUnmuteHandler 应该已经处理了 @Bot 的情况并解除了禁言
-                # 如果代码执行到这里，说明消息不是 @Bot 或者 AtUnmuteHandler 没有处理
-                # 但根据上面 AtUnmuteHandler 的逻辑，如果 Bot 被 @ 并且在禁言中，它会解除禁言
-                # 所以如果执行到这里，Bot 应该仍然处于禁言状态
-                # 我们需要确保 AtUnmuteHandler 的优先级低于 MuteHandler，或者逻辑上先于 MuteHandler 执行
-                # 但这里的逻辑是，如果 AtUnmuteHandler 解除了禁言，那么 MuteHandler 不会再看到禁言记录
-                # 所以这个判断是正确的：如果记录还在，且时间未到，就拦截
                 print(f"[MuteAndUnmutePlugin] Message intercepted in muted stream {stream_id}. Time remaining: {timedelta(seconds=int(mute_until_timestamp - current_time))}")
                 # 从配置中获取禁言期间的提示词（如果有的话）
                 mute_reply_message = self.get_config("messages.muted_reply", "") # 默认为空，不回复
@@ -527,13 +477,43 @@ class MuteAndUnmutePlugin(BasePlugin):
     """主插件类，注册命令、处理器，并定义配置结构。"""
 
     plugin_name = PLUGIN_NAME
-    plugin_description = "一个允许Master控制Bot在当前聊天流中静音和取消静音的插件。支持配置别名、提示词，并支持@Bot唤醒。"
+    plugin_description = "一个允许Master控制Bot在当前聊天流中静音和取消静音的插件。支持配置别名、提示词、功能开关和默认值。"
 
     # --- 配置相关 ---
     config_file_name = "config.toml"
 
     # 定义插件配置结构
     config_schema = {
+        "plugin": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用整个插件。如果为 false，所有功能（静音、@唤醒等）都将被禁用。",
+                example=True
+            )
+        },
+        "features": {
+            "mute_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用静音/取消静音功能。如果为 false，/mute_mai, /unmute_mai 及其别名将无效。",
+                example=True
+            ),
+            "at_unmute_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用 @Bot 唤醒功能。如果为 false，@Bot 将不会解除禁言。",
+                example=True
+            )
+        },
+        "defaults": {
+            "default_mute_minutes": ConfigField(
+                type=int,
+                default=10,
+                description="当指令中未指定时长时，静音的默认时长（单位：分钟）。",
+                example=30
+            )
+        },
         "aliases": {
             "mute": ConfigField(
                 type=list,
